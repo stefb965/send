@@ -29,7 +29,6 @@ let tempDir = null;
 
 if (config.s3_bucket) {
   module.exports = {
-    filename: filename,
     exists: exists,
     ttl: ttl,
     length: awsLength,
@@ -47,7 +46,6 @@ if (config.s3_bucket) {
   tempDir = fs.mkdtempSync(`${tmpdir()}${path.sep}send-`);
   log.info('tempDir', tempDir);
   module.exports = {
-    filename: filename,
     exists: exists,
     ttl: ttl,
     length: localLength,
@@ -93,17 +91,6 @@ function ttl(id) {
   });
 }
 
-function filename(id) {
-  return new Promise((resolve, reject) => {
-    redis_client.hget(id, 'filename', (err, reply) => {
-      if (err || !reply) {
-        return reject();
-      }
-      resolve(reply);
-    });
-  });
-}
-
 function exists(id) {
   return new Promise((resolve, reject) => {
     redis_client.exists(id, (rediserr, reply) => {
@@ -134,7 +121,7 @@ function localGet(id) {
   return fs.createReadStream(path.join(tempDir, id));
 }
 
-function localSet(newId, file, filename, meta) {
+function localSet(newId, file, meta) {
   return new Promise((resolve, reject) => {
     const filepath = path.join(tempDir, newId);
     const fstream = fs.createWriteStream(filepath);
@@ -216,7 +203,7 @@ function awsGet(id) {
   }
 }
 
-function awsSet(newId, file, filename, meta) {
+function awsSet(newId, file, meta) {
   const params = {
     Bucket: config.s3_bucket,
     Key: newId,

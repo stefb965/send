@@ -137,6 +137,7 @@ export default function(state, emitter) {
       state.storage.totalUploads += 1;
       emitter.emit('pushState', `/share/${info.id}`);
     } catch (err) {
+      console.error(err);
       state.transfer = null;
       if (err.message === '0') {
         //cancelled. do nothing
@@ -145,23 +146,34 @@ export default function(state, emitter) {
       }
       state.raven.captureException(err);
       metrics.stoppedUpload({ size, type, err });
-      emitter.emit('replaceState', '/error');
+      emitter.emit('pushState', '/error');
     }
   });
 
-  emitter.on('download', async file => {
-    const size = file.size;
+  emitter.on('preview', async () => {
+    const file = state.fileInfo;
     const url = `/api/download/${file.id}`;
-    const receiver = new FileReceiver(url, file.key);
-    receiver.on('progress', render);
-    receiver.on('decrypting', render);
+    const receiver = new FileReceiver(url, file);
     state.transfer = receiver;
-    const links = openLinksInNewTab();
+    try {
+      await receiver.getMetadata(file.challenge);
+    } catch (e) {
+      if (e.message === '401') {
+        return emitter.emit('pushState', '/404');
+      }
+    }
     render();
+  });
+
+  emitter.on('download', async file => {
+    state.transfer.on('progress', render);
+    state.transfer.on('decrypting', render);
+    const links = openLinksInNewTab();
+    const size = file.size;
     try {
       const start = Date.now();
       metrics.startedDownload({ size: file.size, ttl: file.ttl });
-      const f = await receiver.download();
+      const f = await state.transfer.download(file.challenge);
       const time = Date.now() - start;
       const speed = size / (time / 1000);
       await delay(1000);
@@ -171,13 +183,14 @@ export default function(state, emitter) {
       metrics.completedDownload({ size, time, speed });
       emitter.emit('pushState', '/completed');
     } catch (err) {
+      console.error(err);
       // TODO cancelled download
       const location = err.message === 'notfound' ? '/404' : '/error';
       if (location === '/error') {
         state.raven.captureException(err);
         metrics.stoppedDownload({ size, err });
       }
-      emitter.emit('replaceState', location);
+      emitter.emit('pushState', location);
     } finally {
       state.transfer = null;
       openLinksInNewTab(links, false);

@@ -1,5 +1,5 @@
 import Nanobus from 'nanobus';
-import { arrayToHex, bytes } from './utils';
+import { arrayToB64, bytes } from './utils';
 
 export default class FileSender extends Nanobus {
   constructor(file) {
@@ -10,13 +10,13 @@ export default class FileSender extends Nanobus {
     this.cancelled = false;
     this.iv = window.crypto.getRandomValues(new Uint8Array(12));
     this.uploadXHR = new XMLHttpRequest();
-    this.key = window.crypto.subtle.generateKey(
-      {
-        name: 'AES-GCM',
-        length: 128
-      },
-      true,
-      ['encrypt']
+    this.rawSecret = window.crypto.getRandomValues(new Uint8Array(16));
+    this.secretKey = window.crypto.subtle.importKey(
+      'raw',
+      this.rawSecret,
+      'HKDF',
+      false,
+      ['deriveKey']
     );
   }
 
@@ -71,14 +71,12 @@ export default class FileSender extends Nanobus {
     });
   }
 
-  uploadFile(encrypted, keydata) {
+  uploadFile(encrypted, metadata, rawAuth) {
     return new Promise((resolve, reject) => {
-      const file = this.file;
-      const id = arrayToHex(this.iv);
       const dataView = new DataView(encrypted);
-      const blob = new Blob([dataView], { type: file.type });
+      const blob = new Blob([dataView], { type: 'application/octet-stream' });
       const fd = new FormData();
-      fd.append('data', blob, file.name);
+      fd.append('data', blob);
 
       const xhr = this.uploadXHR;
 
@@ -98,7 +96,7 @@ export default class FileSender extends Nanobus {
             return resolve({
               url: responseObj.url,
               id: responseObj.id,
-              secretKey: keydata.k,
+              secretKey: arrayToB64(this.rawSecret),
               deleteToken: responseObj.delete
             });
           }
@@ -110,18 +108,62 @@ export default class FileSender extends Nanobus {
       xhr.open('post', '/api/upload', true);
       xhr.setRequestHeader(
         'X-File-Metadata',
-        JSON.stringify({
-          id: id,
-          filename: encodeURIComponent(file.name)
-        })
+        arrayToB64(new Uint8Array(metadata))
       );
+      xhr.setRequestHeader('Authorization', `send-v1 ${arrayToB64(rawAuth)}`);
       xhr.send(fd);
       this.msg = 'fileSizeProgress';
     });
   }
 
   async upload() {
-    const key = await this.key;
+    const encoder = new TextEncoder();
+    const secretKey = await this.secretKey;
+    const encryptKey = await window.crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        salt: new Uint8Array(),
+        info: encoder.encode('encryption'),
+        hash: 'SHA-256'
+      },
+      secretKey,
+      {
+        name: 'AES-GCM',
+        length: 128
+      },
+      false,
+      ['encrypt']
+    );
+    const authKey = await window.crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        salt: new Uint8Array(),
+        info: encoder.encode('authentication'),
+        hash: 'SHA-256'
+      },
+      secretKey,
+      {
+        name: 'HMAC',
+        hash: 'SHA-256'
+      },
+      true,
+      ['sign']
+    );
+    const metaKey = await window.crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        salt: new Uint8Array(),
+        info: encoder.encode('metadata'),
+        hash: 'SHA-256'
+      },
+      secretKey,
+      {
+        name: 'AES-GCM',
+        length: 128
+      },
+      false,
+      ['encrypt']
+    );
     const plaintext = await this.readFile();
     if (this.cancelled) {
       throw new Error(0);
@@ -134,13 +176,28 @@ export default class FileSender extends Nanobus {
         iv: this.iv,
         tagLength: 128
       },
-      key,
+      encryptKey,
       plaintext
     );
+    const metadata = await window.crypto.subtle.encrypt(
+      {
+        name: 'AES-GCM',
+        iv: new Uint8Array(12),
+        tagLength: 128
+      },
+      metaKey,
+      encoder.encode(
+        JSON.stringify({
+          iv: arrayToB64(this.iv),
+          name: this.file.name,
+          type: this.file.type
+        })
+      )
+    );
+    const rawAuth = await window.crypto.subtle.exportKey('raw', authKey);
     if (this.cancelled) {
       throw new Error(0);
     }
-    const keydata = await window.crypto.subtle.exportKey('jwk', key);
-    return this.uploadFile(encrypted, keydata);
+    return this.uploadFile(encrypted, metadata, new Uint8Array(rawAuth));
   }
 }

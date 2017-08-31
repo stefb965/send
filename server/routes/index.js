@@ -59,9 +59,10 @@ module.exports = function(app) {
   app.get('/download/:id', pages.download);
   app.get('/completed', pages.blank);
   app.get('/unsupported/:reason', pages.unsupported);
-  app.post('/api/upload', require('./upload'));
   app.get('/api/download/:id', require('./download'));
   app.get('/api/exists/:id', require('./exists'));
+  app.get('/api/metadata/:id', require('./metadata'));
+  app.post('/api/upload', require('./upload'));
   app.post('/api/delete/:id', require('./delete'));
 
   app.get('/__version__', function(req, res) {
